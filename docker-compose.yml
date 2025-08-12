@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  youtube-translator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: youtube_translator
+    volumes:
+      - ./downloads:/app/downloads
+      - ./output:/app/output
+      - ./config:/app/config
+      - ./logs:/app/logs
+    environment:
+      - WHISPER_MODEL=base
+      - TRANSLATION_RETRIES=3
+      - SUBTITLE_FONT_SIZE=20
+      - DOWNLOAD_QUALITY=best
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    ports:
+      - "8000:8000"  # 将来のWeb UI用
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # 将来のWeb UI用（オプション）
+  web-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: youtube_translator_web
+    depends_on:
+      - youtube-translator
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://youtube-translator:8000
+    profiles:
+      - web  # docker-compose --profile web up で起動
+
+volumes:
+  downloads:
+  output:
+  logs:
+
+networks:
+  default:
+    name: youtube_translator_network

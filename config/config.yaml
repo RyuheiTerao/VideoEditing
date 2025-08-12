@@ -1,0 +1,50 @@
+# YouTube動画翻訳システム設定ファイル
+
+# Whisper音声認識設定
+whisper_model: "base"  # tiny, base, small, medium, large
+
+# 翻訳設定
+translation_method: "googletrans_safe"  # "deepl", "openai" も可能
+translation_retries: 3
+translation_retry_delay: 2
+translation_batch_size: 3
+batch_size: 3
+max_text_length: 4000  # DeepL使用時
+
+# DeepL設定
+deepl_api_key: "your_deepl_key"
+
+# OpenAI設定
+openai_api_key: "your_openai_key"
+openai_model: "gpt-3.5-turbo"
+
+# 字幕設定
+subtitle_font: "Arial"
+subtitle_font_size: 20
+subtitle_font_color: "white"
+subtitle_outline_color: "black"
+subtitle_outline_width: 1
+subtitle_method: "burn"  # burn（焼き込み） or soft（外部字幕）
+
+# ダウンロード設定
+download_quality: "best"  # best, worst, 720p, 1080p
+proxy: null  # プロキシURL（必要な場合）
+
+# AI編集設定（将来の機能用）
+ai_editing:
+  enabled: false
+  api_provider: "openai"  # openai, anthropic
+  model: "gpt-4"
+  target_duration: 600  # 目標動画長（秒）
+  highlight_threshold: 0.7  # ハイライト検出の閾値
+  openai_api_key: null  # 環境変数OPENAI_API_KEYから取得
+  anthropic_api_key: null  # 環境変数ANTHROPIC_API_KEYから取得
+
+# ファイル管理設定
+cleanup_temp_files: true
+keep_original_files: true
+
+# ログ設定
+log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+log_to_file: true
+log_file_path: "logs/app.log"
