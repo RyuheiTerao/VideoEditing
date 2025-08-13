@@ -11,6 +11,7 @@ services:
       - ./output:/app/output
       - ./config:/app/config
       - ./logs:/app/logs
+      - ./src:/app/src
     environment:
       - WHISPER_MODEL=base
       - TRANSLATION_RETRIES=3

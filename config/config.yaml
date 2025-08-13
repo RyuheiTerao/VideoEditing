@@ -20,11 +20,13 @@ openai_model: "gpt-3.5-turbo"
 
 # 字幕設定
 subtitle_font: "Arial"
-subtitle_font_size: 20
+subtitle_font_size: 24
 subtitle_font_color: "white"
 subtitle_outline_color: "black"
 subtitle_outline_width: 1
 subtitle_method: "burn"  # burn（焼き込み） or soft（外部字幕）
+font_name: "DejaVu Sans"
+subtitle_encoding: "utf-8"
 
 # ダウンロード設定
 download_quality: "best"  # best, worst, 720p, 1080p
