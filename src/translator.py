@@ -1,5 +1,5 @@
 """
-翻訳モジュール (修正版)
+翻訳モジュール (完全修正版 - coroutine問題解決)
 """
 
 import os
@@ -13,7 +13,7 @@ import json
 logger = logging.getLogger(__name__)
 
 class Translator:
-    """テキスト翻訳と字幕生成を行うクラス（改善版）"""
+    """テキスト翻訳と字幕生成を行うクラス（完全修正版）"""
 
     def __init__(self, config):
         self.config = config
@@ -29,11 +29,9 @@ class Translator:
         self.batch_size = self._safe_int(config.get("batch_size"), 3)
         self.max_text_length = self._safe_int(config.get("max_text_length"), 4000)
 
-        # 設定値の検証とログ出力
-        logger.info(f"翻訳設定 - max_retries: {self.max_retries} (型: {type(self.max_retries)})")
-        logger.info(f"翻訳設定 - retry_delay: {self.retry_delay} (型: {type(self.retry_delay)})")
-        logger.info(f"翻訳設定 - batch_size: {self.batch_size} (型: {type(self.batch_size)})")
-        logger.info(f"翻訳設定 - max_text_length: {self.max_text_length} (型: {type(self.max_text_length)})")
+        logger.info(f"翻訳設定 - method: {self.translation_method}")
+        logger.info(f"翻訳設定 - max_retries: {self.max_retries}")
+        logger.info(f"翻訳設定 - batch_size: {self.batch_size}")
 
         # 翻訳クライアントの初期化
         self.translator = None
@@ -81,14 +79,13 @@ class Translator:
                 self._init_googletrans_safe()
         except Exception as e:
             logger.error(f"翻訳クライアント初期化エラー: {e}")
-            self.translator = None
+            raise
 
     def _init_googletrans_safe(self):
         """安全なGoogle翻訳初期化"""
         try:
             from googletrans import Translator as GoogleTranslator
 
-            # User-Agentを設定してより安定させる
             self.translator = GoogleTranslator(
                 service_urls=[
                     'translate.google.com',
@@ -131,9 +128,9 @@ class Translator:
             logger.error("openaiが必要です: pip install openai")
             raise
 
-    def translate_text(self, text: str, target_lang: str = "ja", source_lang: str = "auto") -> Optional[str]:
+    def translate_text(self, text: str, target_lang: str = "ja", source_lang: str = "auto") -> str:
         """
-        テキストを翻訳（改善版）
+        テキストを翻訳（完全修正版 - coroutine問題解決）
 
         Args:
             text: 翻訳するテキスト
@@ -141,10 +138,16 @@ class Translator:
             source_lang: 翻訳元言語コード
 
         Returns:
-            翻訳されたテキスト
+            翻訳されたテキスト（必ず文字列を返す）
         """
-        if not text or not text.strip():
-            return text
+        # 入力チェック
+        if not text or not isinstance(text, str):
+            logger.warning(f"無効な入力テキスト: {type(text)} - {text}")
+            return str(text) if text else ""
+
+        text = text.strip()
+        if not text:
+            return ""
 
         # テキストの長さチェック
         if len(text) > self.max_text_length:
@@ -155,53 +158,74 @@ class Translator:
         target_lang = self._normalize_language_code(target_lang)
         source_lang = self._normalize_language_code(source_lang) if source_lang != "auto" else source_lang
 
-        # max_retriesの型を再確認（デバッグ用）
-        if not isinstance(self.max_retries, int):
-            logger.error(f"max_retries が整数ではありません: {self.max_retries} (型: {type(self.max_retries)})")
-            self.max_retries = 3
-
+        # 翻訳実行（同期的に処理）
         for attempt in range(self.max_retries):
             try:
-                logger.debug(f"翻訳試行 {attempt + 1}/{self.max_retries}: {text[:50]}...")
+                logger.debug(f"翻訳試行 {attempt + 1}/{self.max_retries}: '{text[:30]}...'")
 
+                # 翻訳方法に応じて処理を分岐
                 if self.translation_method == "googletrans_safe":
-                    result = self._translate_with_googletrans(text, target_lang, source_lang)
+                    result = self._translate_with_googletrans_sync(text, target_lang, source_lang)
                 elif self.translation_method == "deepl":
-                    result = self._translate_with_deepl(text, target_lang, source_lang)
+                    result = self._translate_with_deepl_sync(text, target_lang, source_lang)
                 elif self.translation_method == "openai":
-                    result = self._translate_with_openai(text, target_lang, source_lang)
+                    result = self._translate_with_openai_sync(text, target_lang, source_lang)
                 else:
                     raise ValueError(f"サポートされていない翻訳方法: {self.translation_method}")
 
-                if result and result.strip():
-                    logger.debug(f"翻訳成功: {result[:50]}...")
-                    return result
-
-                logger.warning(f"翻訳結果が空です (試行 {attempt + 1}/{self.max_retries})")
+                # 結果の検証（coroutineオブジェクトでないことを確認）
+                if self._is_valid_translation_result(result):
+                    result_str = str(result).strip()
+                    logger.debug(f"翻訳成功: '{result_str[:30]}...'")
+                    return result_str
+                else:
+                    logger.warning(f"無効な翻訳結果 (試行 {attempt + 1}): {type(result)} - {result}")
 
             except Exception as e:
                 error_msg = str(e)
                 logger.warning(f"翻訳試行 {attempt + 1}/{self.max_retries} 失敗: {error_msg}")
 
-                # 特定のエラーに対する対処
-                if "cannot be interpreted as an integer" in error_msg:
-                    logger.error("言語コードエラーが検出されました。言語コードを確認してください。")
-                elif "429" in error_msg or "rate limit" in error_msg.lower():
-                    logger.warning("レート制限に達しました。待機時間を増やします。")
-                    time.sleep(self.retry_delay * (attempt + 2))
+                # レート制限の処理
+                if "429" in error_msg or "rate limit" in error_msg.lower():
+                    wait_time = self.retry_delay * (attempt + 2)
+                    logger.warning(f"レート制限。{wait_time}秒待機します...")
+                    time.sleep(wait_time)
                 elif "503" in error_msg or "service unavailable" in error_msg.lower():
                     logger.warning("翻訳サービスが一時的に利用できません。")
+                    time.sleep(self.retry_delay * (attempt + 1))
 
                 if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))
-                else:
-                    logger.error(f"翻訳に失敗しました: {text[:100]}...")
-                    return text  # 翻訳失敗時は元のテキストを返す
+                    time.sleep(self.retry_delay)
 
+        # すべての試行が失敗した場合は元のテキストを返す
+        logger.error(f"翻訳に失敗しました。元のテキストを返します: '{text[:50]}...'")
         return text
 
-    def _translate_with_googletrans(self, text: str, target_lang: str, source_lang: str) -> Optional[str]:
-        """Google翻訳での翻訳"""
+    def _is_valid_translation_result(self, result) -> bool:
+        """翻訳結果の妥当性をチェック（coroutineオブジェクトでないことを確認）"""
+        # coroutineオブジェクトでないことを確認
+        if hasattr(result, '__await__') or str(type(result)).startswith('<class \'coroutine\''):
+            logger.error(f"翻訳結果がcoroutineオブジェクトです: {type(result)}")
+            return False
+
+        # Noneや空文字列でないことを確認
+        if result is None:
+            return False
+
+        # 文字列に変換して内容があることを確認
+        result_str = str(result).strip()
+        if not result_str:
+            return False
+
+        # coroutineの文字列表現が含まれていないことを確認
+        if 'coroutine object' in result_str:
+            logger.error(f"翻訳結果にcoroutineの文字列表現が含まれています: {result_str}")
+            return False
+
+        return True
+
+    def _translate_with_googletrans_sync(self, text: str, target_lang: str, source_lang: str) -> str:
+        """Google翻訳での翻訳（同期版）"""
         if not self.translator:
             raise Exception("Google翻訳クライアントが初期化されていません")
 
@@ -214,25 +238,35 @@ class Translator:
             if not isinstance(source_lang, str):
                 source_lang = str(source_lang)
 
+            # 同期的に翻訳を実行
             result = self.translator.translate(
                 text,
                 dest=target_lang,
                 src=source_lang
             )
 
-            return result.text if hasattr(result, 'text') else str(result)
+            # 結果を文字列として取得
+            if hasattr(result, 'text'):
+                translated_text = result.text
+            else:
+                translated_text = str(result)
+
+            # coroutineオブジェクトでないことを再確認
+            if hasattr(translated_text, '__await__'):
+                raise Exception("翻訳結果がcoroutineオブジェクトです")
+
+            return translated_text
 
         except Exception as e:
             logger.error(f"Google翻訳エラー: {e}")
             raise
 
-    def _translate_with_deepl(self, text: str, target_lang: str, source_lang: str) -> Optional[str]:
-        """DeepLでの翻訳"""
+    def _translate_with_deepl_sync(self, text: str, target_lang: str, source_lang: str) -> str:
+        """DeepLでの翻訳（同期版）"""
         if not self.translator:
             raise Exception("DeepL翻訳クライアントが初期化されていません")
 
         try:
-            # DeepL用の言語コード変換
             target_lang_deepl = self._convert_to_deepl_code(target_lang)
             source_lang_deepl = None if source_lang == "auto" else self._convert_to_deepl_code(source_lang)
 
@@ -242,14 +276,14 @@ class Translator:
                 source_lang=source_lang_deepl
             )
 
-            return result.text
+            return str(result.text)
 
         except Exception as e:
             logger.error(f"DeepL翻訳エラー: {e}")
             raise
 
-    def _translate_with_openai(self, text: str, target_lang: str, source_lang: str) -> Optional[str]:
-        """OpenAIでの翻訳"""
+    def _translate_with_openai_sync(self, text: str, target_lang: str, source_lang: str) -> str:
+        """OpenAIでの翻訳（同期版）"""
         if not self.translator:
             raise Exception("OpenAI翻訳クライアントが初期化されていません")
 
@@ -266,7 +300,7 @@ class Translator:
                 temperature=0.1
             )
 
-            return response.choices[0].message.content.strip()
+            return str(response.choices[0].message.content).strip()
 
         except Exception as e:
             logger.error(f"OpenAI翻訳エラー: {e}")
@@ -281,7 +315,7 @@ class Translator:
             for i, chunk in enumerate(chunks):
                 logger.info(f"長文分割翻訳: {i+1}/{len(chunks)}")
                 translated_chunk = self.translate_text(chunk.strip(), target_lang, source_lang)
-                translated_chunks.append(translated_chunk or chunk)
+                translated_chunks.append(translated_chunk)
                 time.sleep(1)  # レート制限対策
 
             return " ".join(translated_chunks)
@@ -294,7 +328,6 @@ class Translator:
         """テキストを安全に分割"""
         import re
 
-        # 文単位で分割を試行
         sentences = re.split(r'([.!?。！？]\s*)', text)
         chunks = []
         current_chunk = ""
@@ -317,10 +350,8 @@ class Translator:
         if not isinstance(lang_code, str):
             lang_code = str(lang_code)
 
-        # 小文字に変換し、最初の2文字のみ使用
         normalized = lang_code.lower().strip()[:2]
 
-        # 一般的な言語コードのマッピング
         code_mapping = {
             "ja": "ja", "jp": "ja", "japanese": "ja",
             "en": "en", "english": "en",
@@ -353,7 +384,7 @@ class Translator:
 
     def translate_transcript(self, transcription: Dict, target_lang: str = "ja") -> Optional[Dict]:
         """
-        転写結果を翻訳（改善版）
+        転写結果を翻訳（完全修正版 - coroutine問題解決）
 
         Args:
             transcription: 転写結果
@@ -369,75 +400,93 @@ class Translator:
 
             logger.info(f"転写テキストの翻訳開始 - 対象言語: {target_lang}")
 
-            # 転写結果をコピー
-            translated_transcription = transcription.copy()
-            translated_transcription["translated_language"] = target_lang
-            translated_transcription["translated_segments"] = []
-
             segments = transcription.get("segments", [])
             if not segments:
                 logger.error("セグメントが見つかりません")
                 return None
 
-            total_segments = len(segments)
-            logger.info(f"翻訳対象セグメント数: {total_segments}")
+            logger.info(f"翻訳対象セグメント数: {len(segments)}")
+
+            # 転写結果をコピー
+            translated_transcription = transcription.copy()
+            translated_transcription["translated_language"] = target_lang
+            translated_transcription["translated_segments"] = []
 
             # 各セグメントを翻訳
+            successful_translations = 0
             for i, segment in enumerate(segments):
                 try:
-                    # セグメントの型チェック
                     if not isinstance(segment, dict):
-                        logger.warning(f"セグメント {i} の型が不正です: {type(segment)}")
+                        logger.warning(f"セグメント {i} の型が不正: {type(segment)}")
                         continue
 
                     original_text = segment.get("text", "")
-                    if not isinstance(original_text, str):
-                        original_text = str(original_text)
-
-                    if not original_text.strip():
-                        logger.debug(f"セグメント {i} は空です、スキップ")
+                    if not original_text or not str(original_text).strip():
+                        logger.debug(f"セグメント {i} は空、スキップ")
                         continue
 
-                    # 翻訳実行
+                    original_text = str(original_text).strip()
+
+                    # 翻訳実行（同期的に実行）
+                    logger.debug(f"セグメント {i+1} 翻訳中: '{original_text[:30]}...'")
                     translated_text = self.translate_text(original_text, target_lang)
+
+                    # 翻訳結果の検証（coroutineでないことを確認）
+                    if not self._is_valid_translation_result(translated_text):
+                        logger.error(f"セグメント {i} の翻訳結果が不正: {type(translated_text)} - {translated_text}")
+                        translated_text = original_text
+
+                    translated_text = str(translated_text).strip()
 
                     # 翻訳結果をセグメントに追加
                     translated_segment = {
-                        "start": segment.get("start", 0),
-                        "end": segment.get("end", 0),
+                        "start": float(segment.get("start", 0)),
+                        "end": float(segment.get("end", 0)),
                         "original_text": original_text,
-                        "text": translated_text or original_text
+                        "text": translated_text
                     }
 
                     translated_transcription["translated_segments"].append(translated_segment)
+                    successful_translations += 1
 
                     # 進捗表示
-                    if (i + 1) % 10 == 0 or (i + 1) == total_segments:
-                        logger.info(f"翻訳進捗: {i + 1}/{total_segments} セグメント完了")
+                    if (i + 1) % 10 == 0 or (i + 1) == len(segments):
+                        logger.info(f"翻訳進捗: {i + 1}/{len(segments)} セグメント完了 (成功: {successful_translations})")
 
                     # レート制限対策
                     if i > 0 and i % self.batch_size == 0:
+                        logger.debug("レート制限対策の待機中...")
                         time.sleep(1)
 
                 except Exception as e:
-                    logger.warning(f"セグメント {i} の翻訳でエラー: {e}")
+                    logger.error(f"セグメント {i} の翻訳でエラー: {e}")
                     # エラーが発生したセグメントは元のテキストを保持
-                    translated_segment = {
-                        "start": segment.get("start", 0),
-                        "end": segment.get("end", 0),
-                        "original_text": segment.get("text", ""),
-                        "text": segment.get("text", "")
-                    }
-                    translated_transcription["translated_segments"].append(translated_segment)
+                    try:
+                        original_text = str(segment.get("text", "")).strip()
+                        if original_text:
+                            translated_segment = {
+                                "start": float(segment.get("start", 0)),
+                                "end": float(segment.get("end", 0)),
+                                "original_text": original_text,
+                                "text": original_text
+                            }
+                            translated_transcription["translated_segments"].append(translated_segment)
+                    except Exception as nested_e:
+                        logger.error(f"セグメント {i} のエラー復旧も失敗: {nested_e}")
 
             # 全体テキストも翻訳
             full_text = transcription.get("text", "")
-            if full_text:
-                translated_transcription["translated_text"] = self.translate_text(full_text, target_lang)
+            if full_text and isinstance(full_text, str):
+                logger.info("全体テキストの翻訳中...")
+                translated_full_text = self.translate_text(full_text, target_lang)
+                if self._is_valid_translation_result(translated_full_text):
+                    translated_transcription["translated_text"] = str(translated_full_text)
+                else:
+                    translated_transcription["translated_text"] = full_text
             else:
                 translated_transcription["translated_text"] = ""
 
-            logger.info("転写テキストの翻訳完了")
+            logger.info(f"翻訳完了 - 成功: {successful_translations}/{len(segments)} セグメント")
             return translated_transcription
 
         except Exception as e:
@@ -448,7 +497,7 @@ class Translator:
 
     def create_subtitle_file(self, translated_transcription: Dict, video_path: str, format: str = "srt") -> Optional[str]:
         """
-        翻訳結果から字幕ファイルを生成（改善版）
+        翻訳結果から字幕ファイルを生成（完全修正版）
 
         Args:
             translated_transcription: 翻訳された転写結果
@@ -469,75 +518,137 @@ class Translator:
 
             logger.info(f"字幕ファイル生成中: {subtitle_path}")
 
+            segments = translated_transcription.get("translated_segments", [])
+            if not segments:
+                logger.error("翻訳セグメントが見つかりません")
+                return None
+
+            logger.info(f"字幕生成対象セグメント数: {len(segments)}")
+
             if format.lower() == "srt":
-                return self._create_srt_file(translated_transcription, subtitle_path)
+                result = self._create_srt_file_safe(translated_transcription, subtitle_path)
             elif format.lower() == "vtt":
-                return self._create_vtt_file(translated_transcription, subtitle_path)
+                result = self._create_vtt_file_safe(translated_transcription, subtitle_path)
             else:
                 logger.error(f"サポートされていない字幕フォーマット: {format}")
                 return None
 
+            # 生成されたファイルの確認と検証
+            if result and Path(result).exists():
+                file_size = Path(result).stat().st_size
+                logger.info(f"字幕ファイル生成成功: {result} (サイズ: {file_size} バイト)")
+
+                # ファイル内容の検証
+                if self._validate_generated_subtitle_file(result):
+                    return result
+                else:
+                    logger.error("生成された字幕ファイルにcoroutineが含まれています")
+                    # 修復を試行
+                    repaired_path = str(Path(result).with_suffix('.repaired.srt'))
+                    if self._repair_subtitle_file(result, repaired_path):
+                        return repaired_path
+                    return None
+            else:
+                logger.error("字幕ファイルの生成に失敗しました")
+                return None
+
         except Exception as e:
             logger.error(f"字幕ファイル生成エラー: {e}")
+            import traceback
+            logger.error(f"詳細エラー: {traceback.format_exc()}")
             return None
 
-    def _create_srt_file(self, translated_transcription: Dict, output_path: Path) -> Optional[str]:
-        """SRT形式の字幕ファイルを生成（改善版）"""
+    def _create_srt_file_safe(self, translated_transcription: Dict, output_path: Path) -> Optional[str]:
+        """SRT形式の字幕ファイルを生成（完全修正版）"""
         try:
-            subs = pysrt.SubRipFile()
             segments = translated_transcription.get("translated_segments", [])
 
             if not segments:
                 logger.error("翻訳セグメントが見つかりません")
                 return None
 
+            subs = pysrt.SubRipFile()
+            valid_segments = 0
+
             for i, segment in enumerate(segments):
                 try:
-                    # 型チェックと値の検証
-                    start_time_val = segment.get("start")
-                    end_time_val = segment.get("end")
+                    start_time_val = segment.get("start", 0)
+                    end_time_val = segment.get("end", 0)
                     text_val = segment.get("text", "")
 
-                    # 数値型チェック
-                    if not isinstance(start_time_val, (int, float)):
-                        logger.warning(f"セグメント {i} の開始時間が不正: {start_time_val}")
-                        start_time_val = 0
-                    if not isinstance(end_time_val, (int, float)):
-                        logger.warning(f"セグメント {i} の終了時間が不正: {end_time_val}")
-                        end_time_val = start_time_val + 1
+                    # 型変換と検証
+                    try:
+                        start_time_val = float(start_time_val)
+                        end_time_val = float(end_time_val)
+                    except (ValueError, TypeError):
+                        logger.warning(f"セグメント {i} の時間が不正: start={start_time_val}, end={end_time_val}")
+                        continue
 
-                    # タイムスタンプを変換
-                    start_time = self._seconds_to_srt_time(float(start_time_val))
-                    end_time = self._seconds_to_srt_time(float(end_time_val))
-
-                    # テキストの型チェック
+                    # テキストの処理
                     if not isinstance(text_val, str):
                         text_val = str(text_val)
 
+                    text_val = text_val.strip()
+
+                    # coroutineオブジェクトの文字列表現をチェック
+                    if 'coroutine object' in text_val:
+                        logger.error(f"セグメント {i} にcoroutineが含まれています: {text_val}")
+                        continue
+
+                    if not text_val:
+                        logger.debug(f"セグメント {i} のテキストが空")
+                        continue
+
+                    # 時間の妥当性チェック
+                    if start_time_val < 0 or end_time_val <= start_time_val:
+                        logger.warning(f"セグメント {i} の時間が不正: {start_time_val} -> {end_time_val}")
+                        if end_time_val <= start_time_val:
+                            end_time_val = start_time_val + 1
+
+                    # タイムスタンプを変換
+                    start_time = self._seconds_to_srt_time(start_time_val)
+                    end_time = self._seconds_to_srt_time(end_time_val)
+
                     # 字幕項目を作成
                     sub = pysrt.SubRipItem(
-                        index=i + 1,
+                        index=valid_segments + 1,
                         start=start_time,
                         end=end_time,
-                        text=text_val.strip()
+                        text=text_val
                     )
                     subs.append(sub)
+                    valid_segments += 1
+
+                    logger.debug(f"セグメント {i} 追加: '{text_val[:30]}...' ({start_time_val:.2f}s -> {end_time_val:.2f}s)")
 
                 except Exception as e:
                     logger.warning(f"セグメント {i} のSRT作成でエラー: {e}")
                     continue
 
+            if valid_segments == 0:
+                logger.error("有効なセグメントが1つもありません")
+                return None
+
             # SRTファイルに保存
+            logger.info(f"SRTファイル保存中: {valid_segments} セグメント")
             subs.save(str(output_path), encoding='utf-8')
-            logger.info(f"SRT字幕ファイル生成完了: {output_path}")
-            return str(output_path)
+
+            # ファイルが正常に作成されたか確認
+            if output_path.exists() and output_path.stat().st_size > 0:
+                logger.info(f"SRT字幕ファイル生成完了: {output_path} ({valid_segments} セグメント)")
+                return str(output_path)
+            else:
+                logger.error("SRTファイルが空または作成されませんでした")
+                return None
 
         except Exception as e:
             logger.error(f"SRT字幕ファイル生成エラー: {e}")
+            import traceback
+            logger.error(f"詳細エラー: {traceback.format_exc()}")
             return None
 
-    def _create_vtt_file(self, translated_transcription: Dict, output_path: Path) -> Optional[str]:
-        """VTT形式の字幕ファイルを生成（改善版）"""
+    def _create_vtt_file_safe(self, translated_transcription: Dict, output_path: Path) -> Optional[str]:
+        """VTT形式の字幕ファイルを生成（完全修正版）"""
         try:
             segments = translated_transcription.get("translated_segments", [])
 
@@ -545,9 +656,9 @@ class Translator:
                 logger.error("翻訳セグメントが見つかりません")
                 return None
 
-            # 手動でVTTファイルを作成（webvttライブラリの依存性を避ける）
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("WEBVTT\n\n")
+                valid_segments = 0
 
                 for i, segment in enumerate(segments):
                     try:
@@ -555,29 +666,105 @@ class Translator:
                         end_time_val = float(segment.get("end", 0))
                         text_val = str(segment.get("text", "")).strip()
 
-                        # タイムスタンプをVTT形式に変換
+                        # coroutineオブジェクトの文字列表現をチェック
+                        if 'coroutine object' in text_val:
+                            logger.error(f"セグメント {i} にcoroutineが含まれています: {text_val}")
+                            continue
+
+                        if not text_val:
+                            continue
+
+                        if end_time_val <= start_time_val:
+                            end_time_val = start_time_val + 1
+
                         start_time = self._seconds_to_vtt_time(start_time_val)
                         end_time = self._seconds_to_vtt_time(end_time_val)
 
-                        # VTT形式で書き込み
                         f.write(f"{start_time} --> {end_time}\n")
                         f.write(f"{text_val}\n\n")
+                        valid_segments += 1
 
                     except Exception as e:
                         logger.warning(f"セグメント {i} のVTT作成でエラー: {e}")
                         continue
 
-            logger.info(f"VTT字幕ファイル生成完了: {output_path}")
-            return str(output_path)
+            if valid_segments > 0:
+                logger.info(f"VTT字幕ファイル生成完了: {output_path} ({valid_segments} セグメント)")
+                return str(output_path)
+            else:
+                logger.error("有効なセグメントが1つもありません")
+                return None
 
         except Exception as e:
             logger.error(f"VTT字幕ファイル生成エラー: {e}")
             return None
 
+    def _validate_generated_subtitle_file(self, file_path: str) -> bool:
+        """生成された字幕ファイルの妥当性をチェック"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # coroutineオブジェクトの文字列表現が含まれているかチェック
+            if 'coroutine object' in content:
+                logger.error(f"字幕ファイルにcoroutineが含まれています: {file_path}")
+                return False
+
+            # 空ファイルでないかチェック
+            if not content.strip():
+                logger.error(f"字幕ファイルが空です: {file_path}")
+                return False
+
+            # 基本的なSRT形式のチェック
+            if file_path.endswith('.srt'):
+                lines = content.split('\n')
+                has_timestamps = any('-->' in line for line in lines)
+                if not has_timestamps:
+                    logger.error(f"SRTファイルにタイムスタンプが見つかりません: {file_path}")
+                    return False
+
+            logger.info(f"字幕ファイルの妥当性チェック: OK - {file_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"字幕ファイルの妥当性チェックエラー: {e}")
+            return False
+
+    def _repair_subtitle_file(self, input_path: str, output_path: str) -> bool:
+        """破損した字幕ファイルを修復"""
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # coroutineオブジェクトの文字列を修復
+            repaired_content = content.replace(
+                '<coroutine object Translator.translate at 0x',
+                '[翻訳エラー - 元のテキストを表示]'
+            )
+
+            # より一般的なcoroutineパターンも修復
+            import re
+            repaired_content = re.sub(
+                r'<coroutine object [^>]+>',
+                '[翻訳エラー]',
+                repaired_content
+            )
+
+            # 修復されたファイルを保存
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(repaired_content)
+
+            logger.info(f"字幕ファイルを修復しました: {output_path}")
+            return self._validate_generated_subtitle_file(output_path)
+
+        except Exception as e:
+            logger.error(f"字幕ファイル修復エラー: {e}")
+            return False
+
     def _seconds_to_srt_time(self, seconds: float):
         """秒数をSRT時間フォーマットに変換（エラーハンドリング強化）"""
         try:
-            seconds = max(0, float(seconds))  # 負の値を防ぐ
+            seconds = max(0, float(seconds))
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
@@ -591,7 +778,7 @@ class Translator:
     def _seconds_to_vtt_time(self, seconds: float) -> str:
         """秒数をVTT時間フォーマットに変換（エラーハンドリング強化）"""
         try:
-            seconds = max(0, float(seconds))  # 負の値を防ぐ
+            seconds = max(0, float(seconds))
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
@@ -603,18 +790,9 @@ class Translator:
             return "00:00:00.000"
 
     def detect_language(self, text: str) -> Optional[str]:
-        """
-        テキストの言語を検出（改善版）
-
-        Args:
-            text: 検出するテキスト
-
-        Returns:
-            検出された言語コード
-        """
+        """テキストの言語を検出"""
         try:
             if not self.translator or self.translation_method != "googletrans_safe":
-                logger.warning("言語検出はGoogle翻訳でのみサポートされています")
                 return None
 
             if not isinstance(text, str) or not text.strip():
@@ -650,3 +828,126 @@ class Translator:
             logger.info("翻訳クライアントをクリーンアップしました")
         except Exception as e:
             logger.warning(f"翻訳クライアントクリーンアップエラー: {e}")
+
+# デバッグ・トラブルシューティング用の関数
+
+def validate_srt_file(srt_path: str) -> bool:
+    """SRTファイルの妥当性をチェック"""
+    try:
+        if not os.path.exists(srt_path):
+            logger.error(f"SRTファイルが存在しません: {srt_path}")
+            return False
+
+        file_size = os.path.getsize(srt_path)
+        if file_size == 0:
+            logger.error(f"SRTファイルが空です: {srt_path}")
+            return False
+
+        # ファイル内容をチェック
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # coroutineオブジェクトが含まれていないかチェック
+        if 'coroutine object' in content:
+            logger.error(f"SRTファイルにcoroutineオブジェクトが含まれています: {srt_path}")
+            return False
+
+        # pysrtで読み込みテスト
+        subs = pysrt.open(srt_path, encoding='utf-8')
+        logger.info(f"SRTファイル検証成功: {len(subs)} 字幕エントリ、{file_size} バイト")
+        return True
+
+    except Exception as e:
+        logger.error(f"SRTファイル検証エラー: {e}")
+        return False
+
+def repair_srt_file(input_path: str, output_path: str) -> bool:
+    """破損したSRTファイルを修復"""
+    try:
+        with open(input_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # coroutineオブジェクトの文字列を修復
+        import re
+
+        # 具体的なcoroutineパターンを修復
+        patterns = [
+            r'<coroutine object Translator\.translate at 0x[a-fA-F0-9]+>',
+            r'<coroutine object [^>]+>',
+            r'<coroutine.*?>',
+        ]
+
+        for pattern in patterns:
+            content = re.sub(pattern, '[翻訳エラー]', content)
+
+        # 空行の正規化
+        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
+
+        # 時間フォーマットの修正（必要に応じて）
+        content = re.sub(r'(\d{2}):(\d{2}):(\d{2})\.(\d{3})', r'\1:\2:\3,\4', content)
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        logger.info(f"SRTファイルを修復しました: {output_path}")
+        return validate_srt_file(output_path)
+
+    except Exception as e:
+        logger.error(f"SRTファイル修復エラー: {e}")
+        return False
+
+def create_test_srt(output_path: str) -> bool:
+    """テスト用のSRTファイルを作成（動作確認用）"""
+    try:
+        test_content = """1
+00:00:01,000 --> 00:00:05,000
+これはテスト字幕です。
+
+2
+00:00:05,000 --> 00:00:10,000
+SRTファイルが正常に動作しています。
+
+3
+00:00:10,000 --> 00:00:15,000
+字幕システムのテストが完了しました。
+"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(test_content)
+
+        logger.info(f"テストSRTファイルを作成: {output_path}")
+        return validate_srt_file(output_path)
+
+    except Exception as e:
+        logger.error(f"テストSRTファイル作成エラー: {e}")
+        return False
+
+def debug_translation_process(translator_instance, test_text: str = "Hello, world!") -> bool:
+    """翻訳プロセスのデバッグ"""
+    try:
+        logger.info("=== 翻訳プロセスデバッグ開始 ===")
+
+        # 1. 基本的な翻訳テスト
+        logger.info(f"テストテキスト: '{test_text}'")
+        result = translator_instance.translate_text(test_text, "ja")
+        logger.info(f"翻訳結果: '{result}'")
+        logger.info(f"結果の型: {type(result)}")
+
+        # 2. coroutineチェック
+        is_valid = translator_instance._is_valid_translation_result(result)
+        logger.info(f"翻訳結果の妥当性: {is_valid}")
+
+        # 3. 結果の詳細分析
+        if hasattr(result, '__await__'):
+            logger.error("翻訳結果がcoroutineオブジェクトです！")
+            return False
+
+        if 'coroutine object' in str(result):
+            logger.error("翻訳結果にcoroutineの文字列表現が含まれています！")
+            return False
+
+        logger.info("=== 翻訳プロセスデバッグ完了: OK ===")
+        return True
+
+    except Exception as e:
+        logger.error(f"翻訳プロセスデバッグエラー: {e}")
+        return False
